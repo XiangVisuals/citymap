@@ -1,0 +1,1549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple 风格 3D 城市地形沙盘</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: { extend: {} }
+        }
+    </script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; transition: background-color 0.3s; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+
+        .spinner {
+            border: 3px solid rgba(156, 163, 175, 0.3); border-left-color: currentColor;
+            border-radius: 50%; width: 32px; height: 32px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type=range] { accent-color: #007aff; } 
+        
+        #osm-preview-canvas { cursor: crosshair; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="antialiased select-none bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200 transition-colors duration-500">
+
+    <div id="canvas-container"></div>
+
+    <!-- 左侧信息层 -->
+    <div class="absolute top-0 left-0 p-6 pointer-events-none z-10 w-[340px] max-h-screen overflow-y-auto pb-10">
+        <div class="flex justify-between items-start mb-2">
+            <h1 class="text-2xl font-bold tracking-tight drop-shadow-sm flex items-center gap-2">
+                Apple Maps 风格沙盘
+            </h1>
+            <div class="flex gap-2">
+                <button id="toggle-view-btn" class="pointer-events-auto px-3 py-1 text-xs font-bold rounded-full bg-white/80 dark:bg-slate-800/80 shadow hover:bg-slate-200 dark:hover:bg-slate-700 transition text-[#007aff] dark:text-[#0a84ff]">
+                    2D
+                </button>
+                <button id="theme-toggle-btn" class="pointer-events-auto p-2 rounded-full bg-white/80 dark:bg-slate-800/80 shadow hover:bg-slate-200 dark:hover:bg-slate-700 transition">
+                    <svg id="icon-sun" class="w-4 h-4 text-amber-500 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                    <svg id="icon-moon" class="w-4 h-4 text-slate-600 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+                </button>
+            </div>
+        </div>
+        <p class="text-slate-500 dark:text-slate-400 text-xs font-medium">极致纸模型质感 / 航拍交互 / 建筑替换</p>
+        
+        <div class="mt-4 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-slate-200 dark:border-slate-800 p-4 rounded-3xl shadow-xl pointer-events-auto text-sm transition-colors duration-500 space-y-4">
+            
+            <div class="flex justify-between text-xs p-3 bg-[#F2F2F7] dark:bg-[#1C1C1E] rounded-xl border border-slate-100 dark:border-slate-800">
+                <div class="text-center w-1/2 border-r border-slate-300 dark:border-slate-700">
+                    <p class="text-slate-400 dark:text-slate-500 mb-1">建筑/区域</p>
+                    <p id="stat-buildings" class="font-bold text-base text-slate-700 dark:text-slate-300">0</p>
+                </div>
+                <div class="text-center w-1/2">
+                    <p class="text-slate-400 dark:text-slate-500 mb-1">道路</p>
+                    <p id="stat-roads" class="font-bold text-base text-slate-700 dark:text-slate-300">0</p>
+                </div>
+            </div>
+
+            <!-- 地形与路网控制组 -->
+            <div class="p-3 rounded-xl bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-800 space-y-4">
+                <label class="cursor-pointer w-full bg-[#007aff] hover:bg-[#0066cc] text-white font-medium py-2 px-3 rounded-lg transition-all flex justify-center items-center gap-2 shadow-sm text-xs">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    上传 DEM 地形 (.tif)
+                    <input type="file" id="dem-file-input" accept=".tif,.tiff" class="hidden">
+                </label>
+                
+                <div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] text-slate-500 font-semibold">高程夸张系数</span>
+                        <span id="elevation-scale-val" class="text-[10px] text-[#007aff] dark:text-[#0a84ff] font-bold">1.0x</span>
+                    </div>
+                    <input type="range" id="elevation-scale-input" min="0.1" max="5.0" step="0.1" value="1.0" class="w-full mt-1">
+                </div>
+
+                <div class="border-t border-slate-300 dark:border-slate-700 pt-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] text-slate-500 font-semibold">显示并导出路网级别</span>
+                        <span id="road-level-val" class="text-[10px] text-[#007aff] dark:text-[#0a84ff] font-bold">所有级别 (6)</span>
+                    </div>
+                    <input type="range" id="road-level-input" min="1" max="6" step="1" value="6" class="w-full mt-1">
+                    <p class="text-[9px] text-slate-400 mt-1 leading-tight">1:快速路 2:主干道 3:次干道 4:支路 5:社区道路 6:小径</p>
+                </div>
+            </div>
+
+            <div class="space-y-2">
+                <button id="add-building-btn" class="w-full bg-slate-800 hover:bg-slate-700 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 font-medium py-2 px-4 rounded-lg transition-all flex justify-center items-center gap-2 shadow-sm text-xs">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                    <span id="add-building-text">添加自定义建筑</span>
+                </button>
+                <button id="export-osm-btn" class="w-full bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium py-2 px-4 rounded-lg transition-all flex justify-center items-center gap-2 border border-slate-200 dark:border-slate-700 text-xs">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    打包导出 OSM + 模型 (.zip)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 初始上传遮罩层 -->
+    <div id="upload-screen" class="absolute inset-0 bg-white/90 dark:bg-slate-950/90 backdrop-blur-md z-50 flex flex-col items-center justify-center transition-opacity duration-500">
+        <div class="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-2xl max-w-md w-full text-center">
+            <div class="mb-4 flex justify-center">
+                <div class="w-16 h-16 bg-[#007aff] rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/30">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
+                </div>
+            </div>
+            <h2 class="text-2xl font-semibold tracking-tight mb-2 text-slate-800 dark:text-white">初始化城市沙盘</h2>
+            <p class="text-slate-500 dark:text-slate-400 text-sm mb-8">请优先上传 OpenStreetMap (.osm/.xml) 建筑底图，或之前导出的项目打包 (.zip)。</p>
+            
+            <label class="cursor-pointer bg-[#007aff] hover:bg-[#0066cc] text-white px-8 py-3.5 rounded-full font-medium transition-colors inline-block shadow-md">
+                选择 OSM 或 ZIP 文件
+                <input type="file" id="osm-file-input" accept=".osm,.xml,.zip" class="hidden">
+            </label>
+            
+            <div id="parsing-indicator" class="hidden mt-8 flex-col items-center text-slate-600 dark:text-slate-300">
+                <div class="spinner mb-4 border-[#007aff]"></div>
+                <p id="parsing-text" class="text-sm font-medium tracking-wide">读取文件中...</p>
+            </div>
+            
+            <div id="upload-error" class="hidden mt-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 text-sm p-4 rounded-xl text-left"></div>
+        </div>
+    </div>
+
+    <!-- 2D 框选预览弹窗 -->
+    <div id="preview-modal" class="absolute inset-0 bg-slate-900/90 backdrop-blur-md z-50 hidden flex-col items-center justify-center">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-3xl shadow-2xl max-w-4xl w-full flex flex-col items-center">
+            <h2 class="text-xl font-bold mb-2 text-slate-800 dark:text-white">框选载入区域</h2>
+            <p class="text-slate-500 text-xs mb-4">在下方预览图中拖拽鼠标画出矩形，仅载入框内数据以优化性能。不画框则全量载入。</p>
+            
+            <div class="relative border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 rounded-xl cursor-crosshair overflow-hidden" style="width: 800px; height: 500px;">
+                <canvas id="osm-preview-canvas" width="800" height="500" class="absolute top-0 left-0 w-full h-full"></canvas>
+                <div id="preview-selection-box" class="absolute border-2 border-[#007aff] bg-[#007aff]/20 pointer-events-none hidden"></div>
+            </div>
+            
+            <div class="mt-5 flex gap-4 w-full justify-end">
+                <button id="preview-cancel-btn" class="px-5 py-2 rounded-full font-medium text-slate-600 bg-slate-200 hover:bg-slate-300 dark:text-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 transition">取消</button>
+                <button id="preview-confirm-btn" class="px-5 py-2 rounded-full font-medium text-white bg-[#007aff] hover:bg-[#0066cc] transition shadow-md">确认选区并生成 3D</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧编辑面板 (GLB 替换功能) -->
+    <div id="editor-panel" class="absolute top-6 right-6 w-80 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl z-20 transition-transform duration-300 transform translate-x-[120%] flex flex-col overflow-y-auto max-h-[90vh]">
+        <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center sticky top-0 bg-white/95 dark:bg-slate-900/95 z-10 rounded-t-3xl">
+            <h3 class="font-bold text-lg text-slate-800 dark:text-white">检查器</h3>
+            <button id="close-editor" class="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl leading-none transition-colors">&times;</button>
+        </div>
+        
+        <div class="p-5 space-y-6">
+            <div class="text-xs text-slate-500 dark:text-slate-400 font-mono flex justify-between bg-[#F2F2F7] dark:bg-[#1C1C1E] p-2.5 rounded-lg border border-slate-100 dark:border-slate-800">
+                <span id="building-id-display">未选择</span>
+                <span id="selection-count-display" class="font-bold hidden">已选: 0</span>
+            </div>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 tracking-wider">坐标偏移 X / Z (米)</label>
+                    <div class="flex gap-2">
+                        <input type="number" id="building-offset-x" step="1" class="w-1/2 bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-800 dark:text-white focus:outline-none focus:border-[#007aff] transition-colors" placeholder="X">
+                        <input type="number" id="building-offset-z" step="1" class="w-1/2 bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-800 dark:text-white focus:outline-none focus:border-[#007aff] transition-colors" placeholder="Z">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 tracking-wider">建筑高度 (米)</label>
+                    <input type="number" id="building-height-input" class="w-full bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-800 dark:text-white focus:outline-none focus:border-[#007aff] transition-colors">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 tracking-wider">自转角度 (度)</label>
+                    <input type="number" id="building-rotation-input" class="w-full bg-[#F2F2F7] dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-800 dark:text-white focus:outline-none focus:border-[#007aff] transition-colors">
+                </div>
+            </div>
+
+            <!-- GLB 模型替换功能 -->
+            <div class="border-t border-slate-100 dark:border-slate-800 pt-5">
+                <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-3 tracking-wider">替换高精模型 (.GLB)</label>
+                <label class="cursor-pointer border-2 border-dashed border-[#007aff]/30 hover:border-[#007aff] bg-[#F2F2F7] dark:bg-[#1C1C1E] rounded-xl p-5 flex flex-col items-center justify-center transition-all text-[#007aff] group">
+                    <svg class="w-6 h-6 mb-2 group-hover:-translate-y-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    <span class="text-xs font-semibold">点击上传 (将自动应用纸模型材质)</span>
+                    <input type="file" id="model-file-input" accept=".glb,.gltf" class="hidden">
+                </label>
+            </div>
+
+            <!-- 模型专属控制面板 -->
+            <div id="custom-model-controls" class="hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] p-4 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
+                <div>
+                    <label class="block text-[10px] text-slate-500 dark:text-slate-400 mb-1">模型缩放倍率</label>
+                    <input type="number" id="model-scale-input" value="1.0" step="0.1" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-white text-xs focus:outline-none focus:border-[#007aff]">
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-500 dark:text-slate-400 mb-1">模型 Y轴偏移</label>
+                    <div class="flex gap-2">
+                        <input type="number" id="model-offset-input" value="0" step="1" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-white text-xs focus:outline-none focus:border-[#007aff]">
+                        <button id="apply-model-transforms-btn" class="bg-[#007aff] hover:bg-[#0066cc] text-white px-3 py-1.5 rounded text-xs font-bold transition whitespace-nowrap">更新</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="border-t border-slate-100 dark:border-slate-800 pt-5">
+                <button id="delete-building-btn" class="w-full bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/50 px-4 py-2.5 rounded-full font-medium transition flex justify-center items-center gap-2 text-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    移除选中对象
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        const geotiff = window.GeoTIFF; 
+
+        // --- 全局核心状态 ---
+        let CENTER_LON = 121.6422;
+        let CENTER_LAT = 38.9181;
+        let CITY_WIDTH_METERS = 8000;
+        let CITY_DEPTH_METERS = 8000;
+        
+        let scene, camera, renderer, controls;
+        
+        let buildingsGroup = new THREE.Group();
+        let roadsGroup = new THREE.Group();
+        let landuseGroup = new THREE.Group(); 
+        
+        let pedestalMesh = null;
+        const mathPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        let ghostBuilding = null;
+        
+        // --- DEM 地形数据状态 ---
+        let demData = null;
+        let demWidth = 0, demHeight = 0;
+        let demOrigMinX = -4000, demOrigMaxX = 4000;
+        let demOrigMinZ = -4000, demOrigMaxZ = 4000;
+        let elevationScale = 1.0;
+        let demOffsetX = 0, demOffsetZ = 0;
+        let demScaleAlignX = 1.0, demScaleAlignZ = 1.0;
+        
+        // --- OSM 解析与预览状态 ---
+        let parsedWays = [];
+        let parsedNodes = new Map();
+        let rawMinLon = 0, rawMaxLon = 0, rawMinLat = 0, rawMaxLat = 0;
+        let previewBox = { startX: 0, startY: 0, endX: 0, endY: 0, isDragging: false };
+        let selectedBounds = null; 
+        let importedModelsMap = new Map(); // 用于存储 ZIP 导入的高精模型缓冲区
+        
+        // --- 路网级别过滤状态 ---
+        let currentRoadMaxLevel = 6;
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let selectedBuildings = new Set(); 
+        const gltfLoader = new GLTFLoader();
+        
+        let isAddMode = false;
+        let is2DMode = false;
+        let isFocusing = false;
+        let focusTarget = null;
+        let cameraTargetPos = null;
+
+        let isCinematic = false;
+        let cinematicAngle = 0;
+        let cinematicRadius = 1500;
+        
+        let isDarkMode = false; 
+        let frameCount = 0;
+        
+        // --- Apple Maps iOS 18 纸模型美学配色规范 ---
+        const materials = {
+            light: {
+                bg: 0xECF1F6,       
+                fog: 0xECF1F6,
+                building: new THREE.MeshStandardMaterial({ color: 0xFFFFFF, roughness: 1.0, metalness: 0.0 }), 
+                highlight: new THREE.MeshStandardMaterial({ color: 0x007aff, roughness: 0.5, metalness: 0.1, emissive: 0x005bb5, emissiveIntensity: 0.2 }), 
+                road: new THREE.MeshBasicMaterial({ color: 0xE4E9ED, transparent: true, opacity: 0.8, side: THREE.DoubleSide }), 
+                ground: new THREE.MeshStandardMaterial({ color: 0xF9F9FB, roughness: 1.0, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }), 
+                park: new THREE.MeshBasicMaterial({ color: 0xD7EFD4, transparent: true, opacity: 0.9 }), 
+                water: new THREE.MeshBasicMaterial({ color: 0xA2C8E7, transparent: true, opacity: 0.9 }), 
+                ambient: 0.9, dirIntensity: 0.7, dirColor: 0xFFFBF2, fillIntensity: 0.4
+            },
+            dark: {
+                bg: 0x1C1C1E, fog: 0x1C1C1E,
+                building: new THREE.MeshStandardMaterial({ color: 0x2C2C2E, roughness: 0.9, metalness: 0.05 }),
+                highlight: new THREE.MeshStandardMaterial({ color: 0x0A84FF, roughness: 0.5, metalness: 0.1, emissive: 0x0A84FF, emissiveIntensity: 0.3 }),
+                road: new THREE.MeshBasicMaterial({ color: 0x3A3A3C, transparent: true, opacity: 0.6, side: THREE.DoubleSide }),
+                ground: new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 1.0, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
+                park: new THREE.MeshBasicMaterial({ color: 0x2A4833, transparent: true, opacity: 0.8 }),
+                water: new THREE.MeshBasicMaterial({ color: 0x1B355A, transparent: true, opacity: 0.8 }),
+                ambient: 0.6, dirIntensity: 1.2, dirColor: 0xDFE9F5, fillIntensity: 0.3
+            }
+        };
+
+        let currentMat = materials.light;
+        let ambientLight, mainLight, fillLight;
+
+        init();
+        animate();
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(currentMat.bg);
+            scene.fog = new THREE.Fog(currentMat.fog, 3000, 18000); 
+            
+            scene.add(landuseGroup);
+            scene.add(buildingsGroup);
+            scene.add(roadsGroup);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 200, 30000);
+            camera.position.set(0, 3000, 4000);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance", logarithmicDepthBuffer: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputColorSpace = THREE.SRGBColorSpace; 
+            container.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2 - 0.05; 
+            controls.minDistance = 50; 
+            controls.maxDistance = 20000;
+            
+            controls.mouseButtons = {
+                LEFT: THREE.MOUSE.ROTATE,
+                MIDDLE: THREE.MOUSE.PAN,
+                RIGHT: THREE.MOUSE.PAN
+            };
+            controls.touches = {
+                ONE: THREE.TOUCH.PAN,
+                TWO: THREE.TOUCH.DOLLY_ROTATE
+            };
+            
+            controls.addEventListener('start', () => { 
+                isCinematic = false; 
+                isFocusing = false; 
+            });
+
+            ambientLight = new THREE.AmbientLight(0xffffff, currentMat.ambient);
+            scene.add(ambientLight);
+            
+            mainLight = new THREE.DirectionalLight(currentMat.dirColor, currentMat.dirIntensity);
+            mainLight.position.set(2000, 4000, 3000);
+            mainLight.castShadow = true;
+            const d = 6000;
+            mainLight.shadow.camera.left = -d; mainLight.shadow.camera.right = d;
+            mainLight.shadow.camera.top = d; mainLight.shadow.camera.bottom = -d;
+            mainLight.shadow.camera.near = 100; mainLight.shadow.camera.far = 20000;
+            mainLight.shadow.mapSize.width = 2048; mainLight.shadow.mapSize.height = 2048; 
+            mainLight.shadow.bias = -0.001; 
+            scene.add(mainLight);
+
+            fillLight = new THREE.DirectionalLight(0xA2C8E7, currentMat.fillIntensity);
+            fillLight.position.set(-3000, 2000, -1000);
+            scene.add(fillLight);
+
+            buildPedestal();
+            setupThemeToggle();
+
+            window.addEventListener('resize', onWindowResize);
+            
+            window.addEventListener('pointermove', (e) => {
+                mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                
+                if (isAddMode && ghostBuilding) {
+                    raycaster.setFromCamera(mouse, camera);
+                    const targetPt = new THREE.Vector3();
+                    raycaster.ray.intersectPlane(mathPlane, targetPt);
+                    if (targetPt) ghostBuilding.position.set(targetPt.x, 0, targetPt.z);
+                }
+            });
+
+            let pointerDownPos = new THREE.Vector2();
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                pointerDownPos.set(e.clientX, e.clientY);
+            });
+            renderer.domElement.addEventListener('pointerup', (e) => {
+                if (pointerDownPos.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) < 5 && e.button === 0) {
+                    onMouseClick(e);
+                }
+            });
+            
+            document.getElementById('toggle-view-btn').addEventListener('click', toggle2D3D);
+            document.getElementById('osm-file-input').addEventListener('change', handleFileUpload);
+            document.getElementById('dem-file-input').addEventListener('change', handleDEMUpload);
+            
+            document.getElementById('elevation-scale-input').addEventListener('input', (e) => {
+                elevationScale = parseFloat(e.target.value);
+                document.getElementById('elevation-scale-val').innerText = elevationScale.toFixed(1) + 'x';
+                applyTerrainToScene();
+            });
+
+            document.getElementById('road-level-input').addEventListener('input', (e) => {
+                currentRoadMaxLevel = parseInt(e.target.value);
+                const labels = ["", "高速/快速路 (1)", "主干道 (2)", "次干道 (3)", "支路 (4)", "社区道路 (5)", "所有级别 (6)"];
+                document.getElementById('road-level-val').innerText = labels[currentRoadMaxLevel];
+                
+                const camPos = camera.position;
+                const renderDistSq = 15000 * 15000; 
+                roadsGroup.children.forEach(r => {
+                    if (r.userData.center) {
+                        const distVis = r.userData.center.distanceToSquared(camPos) < renderDistSq;
+                        r.visible = distVis && (r.userData.roadLevel <= currentRoadMaxLevel);
+                    }
+                });
+            });
+
+            document.getElementById('close-editor').addEventListener('click', closeEditor);
+            
+            const offsetXInput = document.getElementById('building-offset-x');
+            const offsetZInput = document.getElementById('building-offset-z');
+            const heightInput = document.getElementById('building-height-input');
+            const rotInput = document.getElementById('building-rotation-input');
+            offsetXInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { updateBuildingPosition(); offsetXInput.blur(); }});
+            offsetZInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { updateBuildingPosition(); offsetZInput.blur(); }});
+            heightInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { updateBuildingHeight(); heightInput.blur(); }});
+            rotInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { updateBuildingRotation(); rotInput.blur(); }});
+            
+            document.getElementById('model-file-input').addEventListener('change', handleModelUpload);
+            const scaleInput = document.getElementById('model-scale-input');
+            const modelOffsetInput = document.getElementById('model-offset-input');
+            scaleInput.addEventListener('keydown', (e) => { if(e.key==='Enter') { updateCustomModelTransforms(); scaleInput.blur();} });
+            modelOffsetInput.addEventListener('keydown', (e) => { if(e.key==='Enter') { updateCustomModelTransforms(); modelOffsetInput.blur();} });
+            document.getElementById('apply-model-transforms-btn').addEventListener('click', updateCustomModelTransforms);
+
+            document.getElementById('export-osm-btn').addEventListener('click', exportToZip);
+            document.getElementById('delete-building-btn').addEventListener('click', deleteSelectedBuildings);
+            document.getElementById('add-building-btn').addEventListener('click', toggleAddMode);
+
+            setupPreviewCanvas();
+        }
+
+        function setupPreviewCanvas() {
+            const cvs = document.getElementById('osm-preview-canvas');
+            const box = document.getElementById('preview-selection-box');
+            
+            cvs.addEventListener('mousedown', (e) => {
+                const rect = cvs.getBoundingClientRect();
+                previewBox.startX = e.clientX - rect.left;
+                previewBox.startY = e.clientY - rect.top;
+                previewBox.isDragging = true;
+                
+                box.style.left = previewBox.startX + 'px';
+                box.style.top = previewBox.startY + 'px';
+                box.style.width = '0px';
+                box.style.height = '0px';
+                box.classList.remove('hidden');
+            });
+            
+            cvs.addEventListener('mousemove', (e) => {
+                if(!previewBox.isDragging) return;
+                const rect = cvs.getBoundingClientRect();
+                previewBox.endX = Math.max(0, Math.min(800, e.clientX - rect.left));
+                previewBox.endY = Math.max(0, Math.min(500, e.clientY - rect.top));
+                
+                box.style.left = Math.min(previewBox.startX, previewBox.endX) + 'px';
+                box.style.top = Math.min(previewBox.startY, previewBox.endY) + 'px';
+                box.style.width = Math.abs(previewBox.endX - previewBox.startX) + 'px';
+                box.style.height = Math.abs(previewBox.endY - previewBox.startY) + 'px';
+            });
+            
+            cvs.addEventListener('mouseup', () => { previewBox.isDragging = false; });
+            cvs.addEventListener('mouseleave', () => { previewBox.isDragging = false; });
+
+            document.getElementById('preview-cancel-btn').addEventListener('click', () => {
+                document.getElementById('preview-modal').classList.replace('flex', 'hidden');
+                document.getElementById('upload-screen').style.display = 'flex';
+                document.getElementById('parsing-indicator').classList.replace('flex', 'hidden');
+                selectedBounds = null;
+            });
+
+            document.getElementById('preview-confirm-btn').addEventListener('click', () => {
+                if (!box.classList.contains('hidden') && parseInt(box.style.width) > 10) {
+                    const x1 = Math.min(previewBox.startX, previewBox.endX) / 800;
+                    const x2 = Math.max(previewBox.startX, previewBox.endX) / 800;
+                    const y1 = Math.min(previewBox.startY, previewBox.endY) / 500;
+                    const y2 = Math.max(previewBox.startY, previewBox.endY) / 500;
+                    
+                    selectedBounds = {
+                        minLon: rawMinLon + x1 * (rawMaxLon - rawMinLon),
+                        maxLon: rawMinLon + x2 * (rawMaxLon - rawMinLon),
+                        minLat: rawMaxLat - y2 * (rawMaxLat - rawMinLat),
+                        maxLat: rawMaxLat - y1 * (rawMaxLat - rawMinLat)
+                    };
+                } else {
+                    selectedBounds = null;
+                }
+                
+                document.getElementById('preview-modal').classList.replace('flex', 'hidden');
+                
+                if (selectedBounds) {
+                    CENTER_LON = (selectedBounds.minLon + selectedBounds.maxLon) / 2;
+                    CENTER_LAT = (selectedBounds.minLat + selectedBounds.maxLat) / 2;
+                } else {
+                    CENTER_LON = (rawMinLon + rawMaxLon) / 2;
+                    CENTER_LAT = (rawMinLat + rawMaxLat) / 2;
+                }
+                
+                const scr = document.getElementById('upload-screen');
+                scr.style.display = 'flex';
+                document.getElementById('parsing-indicator').classList.replace('hidden', 'flex');
+                document.getElementById('parsing-text').innerText = '正在生成 3D 城市...';
+                
+                setTimeout(() => { start3DGeneration(); }, 50);
+            });
+        }
+
+        function project(lon, lat) {
+            const earthRadius = 6371000; 
+            const x = (lon - CENTER_LON) * (Math.PI / 180) * earthRadius * Math.cos(CENTER_LAT * Math.PI / 180);
+            const y = (lat - CENTER_LAT) * (Math.PI / 180) * earthRadius; 
+            return { x, y };
+        }
+
+        function unproject(x, y) {
+            const earthRadius = 6371000;
+            const lat = CENTER_LAT + (y / earthRadius) * (180 / Math.PI);
+            const lon = CENTER_LON + (x / (earthRadius * Math.cos(CENTER_LAT * Math.PI / 180))) * (180 / Math.PI);
+            return { lon, lat };
+        }
+
+        function getElevationAt(x, z) {
+            if (!demData || demWidth === 0 || demHeight === 0) return 0;
+            const origWidth = demOrigMaxX - demOrigMinX;
+            const origHeight = demOrigMaxZ - demOrigMinZ;
+            
+            const adjX = (x - demOffsetX) / demScaleAlignX;
+            const adjZ = (z - demOffsetZ) / demScaleAlignZ;
+            
+            const u = (adjX - demOrigMinX) / origWidth;
+            const v = (adjZ - demOrigMinZ) / origHeight; 
+            
+            if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+            
+            const px = Math.floor(u * demWidth);
+            const py = Math.floor(v * demHeight);
+            
+            let val = demData[py * demWidth + px];
+            if (val < -10000 || isNaN(val)) val = 0;
+            
+            return val * elevationScale;
+        }
+
+        async function applyTerrainToScene() {
+            if (!demData) return;
+            const targetSize = Math.max(CITY_WIDTH_METERS, CITY_DEPTH_METERS) * 1.5;
+            const geom = new THREE.PlaneGeometry(targetSize, targetSize, 256, 256);
+            geom.rotateX(-Math.PI / 2);
+            
+            const pos = geom.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                pos.setY(i, getElevationAt(pos.getX(i), pos.getZ(i)));
+            }
+            geom.computeVertexNormals();
+
+            if (pedestalMesh) {
+                pedestalMesh.geometry.dispose();
+                pedestalMesh.geometry = geom;
+                pedestalMesh.position.set(0, -1.0, 0); 
+            }
+            
+            const alignGroup = (group) => {
+                group.children.forEach(item => {
+                    if (item.userData.center) {
+                        const ox = item.userData.offsetX || 0;
+                        const oz = item.userData.offsetZ || 0;
+                        item.position.y = getElevationAt(item.userData.center.x + ox, item.userData.center.z + oz);
+                    }
+                });
+            };
+            
+            alignGroup(buildingsGroup);
+            
+            landuseGroup.children.forEach(item => {
+                if (item.userData.center) {
+                    const baseElev = getElevationAt(item.userData.center.x, item.userData.center.z);
+                    const yOffset = item.userData.type === 'water' ? -0.5 : 0.1; 
+                    item.position.y = baseElev + yOffset;
+                }
+            });
+            
+            roadsGroup.children.forEach(r => {
+                const rPos = r.geometry.attributes.position;
+                for (let i = 0; i < rPos.count; i++) {
+                    rPos.setY(i, getElevationAt(rPos.getX(i), rPos.getZ(i)) + 0.3); 
+                }
+                r.geometry.computeVertexNormals();
+                r.geometry.attributes.position.needsUpdate = true;
+            });
+        }
+
+        function toggle2D3D() {
+            is2DMode = !is2DMode;
+            isCinematic = false; 
+            const btn = document.getElementById('toggle-view-btn');
+            
+            focusTarget = controls.target.clone();
+            isFocusing = true;
+            
+            if (is2DMode) {
+                btn.innerText = "3D";
+                btn.classList.add('bg-[#007aff]', 'text-white');
+                btn.classList.remove('bg-white/80', 'dark:bg-slate-800/80', 'text-[#007aff]', 'dark:text-[#0a84ff]');
+                
+                controls.maxPolarAngle = 0; controls.minPolarAngle = 0; controls.enableRotate = false; 
+                const curY = Math.max(camera.position.y, 4000); 
+                cameraTargetPos = new THREE.Vector3(focusTarget.x, curY, focusTarget.z);
+            } else {
+                btn.innerText = "2D";
+                btn.classList.remove('bg-[#007aff]', 'text-white');
+                btn.classList.add('bg-white/80', 'dark:bg-slate-800/80', 'text-[#007aff]', 'dark:text-[#0a84ff]');
+                
+                controls.maxPolarAngle = Math.PI / 2 - 0.05; controls.minPolarAngle = 0; controls.enableRotate = true;
+                const curY = Math.max(camera.position.y, 1500);
+                cameraTargetPos = new THREE.Vector3(focusTarget.x, curY, focusTarget.z + curY * 0.8);
+            }
+        }
+
+        function setupThemeToggle() {
+            const btn = document.getElementById('theme-toggle-btn');
+            btn.addEventListener('click', () => {
+                isDarkMode = !isDarkMode;
+                document.body.classList.toggle('dark', isDarkMode);
+                currentMat = isDarkMode ? materials.dark : materials.light;
+                
+                scene.background.setHex(currentMat.bg);
+                scene.fog.color.setHex(currentMat.fog);
+                
+                ambientLight.intensity = currentMat.ambient;
+                mainLight.intensity = currentMat.dirIntensity; mainLight.color.setHex(currentMat.dirColor);
+                fillLight.intensity = currentMat.fillIntensity;
+                
+                if (pedestalMesh) pedestalMesh.material = currentMat.ground;
+                
+                buildingsGroup.children.forEach(b => {
+                    if(!b.userData.hasCustomModel) {
+                        b.material = selectedBuildings.has(b) ? currentMat.highlight : currentMat.building;
+                    } else {
+                        b.userData.customModelRef.traverse(child => {
+                            if (child.isMesh) {
+                                child.material = selectedBuildings.has(b) ? currentMat.highlight : currentMat.building;
+                            }
+                        });
+                    }
+                });
+                roadsGroup.children.forEach(r => r.material = currentMat.road);
+                landuseGroup.children.forEach(l => {
+                    if(l.userData.type === 'park') l.material = currentMat.park;
+                    if(l.userData.type === 'water') l.material = currentMat.water;
+                });
+            });
+        }
+
+        function buildPedestal() {
+            if (pedestalMesh) { scene.remove(pedestalMesh); pedestalMesh.geometry.dispose(); }
+            const groundGeom = new THREE.PlaneGeometry(CITY_WIDTH_METERS * 2, CITY_DEPTH_METERS * 2);
+            groundGeom.rotateX(-Math.PI / 2);
+            
+            pedestalMesh = new THREE.Mesh(groundGeom, currentMat.ground);
+            pedestalMesh.receiveShadow = true;
+            pedestalMesh.position.y = -1.0; 
+            scene.add(pedestalMesh);
+        }
+
+        function createRoadMesh(points, width) {
+            const positions = [], indices = [];
+            let idx = 0;
+            for (let i = 0; i < points.length - 1; i++) {
+                const p1 = points[i], p2 = points[i + 1];
+                const dx = p2.x - p1.x, dz = p2.z - p1.z;
+                const len = Math.sqrt(dx * dx + dz * dz);
+                if (len === 0) continue;
+                
+                const nx = (-dz / len) * (width / 2);
+                const nz = (dx / len) * (width / 2);
+                
+                const yPos = 0.3; 
+                positions.push(
+                    p1.x + nx, yPos, p1.z + nz, p1.x - nx, yPos, p1.z - nz,
+                    p2.x + nx, yPos, p2.z + nz, p2.x - nx, yPos, p2.z - nz
+                );
+                indices.push(idx, idx+1, idx+2, idx+1, idx+3, idx+2);
+                idx += 4;
+            }
+            
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geom.setIndex(indices);
+            geom.computeBoundingSphere();
+            return new THREE.Mesh(geom, currentMat.road);
+        }
+
+        function clearEntireScene() {
+            buildingsGroup.children.forEach(c => c.geometry.dispose()); buildingsGroup.clear();
+            roadsGroup.children.forEach(c => c.geometry.dispose()); roadsGroup.clear();
+            landuseGroup.children.forEach(c => c.geometry.dispose()); landuseGroup.clear();
+            clearSelection(); updateEditorUI();
+        }
+
+        async function handleDEMUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            try {
+                if(!geotiff || !geotiff.fromBlob) throw new Error("GeoTIFF 库加载失败");
+                const tiff = await geotiff.fromBlob(file);
+                const image = await tiff.getImage();
+                demWidth = image.getWidth(); demHeight = image.getHeight();
+                const rasters = await image.readRasters();
+                demData = rasters[0];
+
+                let bbox;
+                try { bbox = image.getBoundingBox(); } catch(e) { }
+
+                if (bbox && bbox[0] >= -180 && bbox[2] <= 180 && bbox[1] >= -90 && bbox[3] <= 90) {
+                    const ptMin = project(bbox[0], bbox[1]);
+                    const ptMax = project(bbox[2], bbox[3]);
+                    demOrigMinX = ptMin.x; demOrigMaxX = ptMax.x;
+                    demOrigMaxZ = -ptMin.y; demOrigMinZ = -ptMax.y; 
+                }
+                await applyTerrainToScene();
+            } catch (err) { alert("高程数据解析失败: " + err.message); }
+            event.target.value = ''; 
+        }
+
+        // --- 核心升级：增加对 ZIP 包导入及模型复原的支持 ---
+        async function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            document.getElementById('upload-error').classList.add('hidden');
+            document.getElementById('parsing-indicator').classList.replace('hidden', 'flex');
+            
+            const ext = file.name.split('.').pop().toLowerCase();
+            
+            if (ext === 'zip') {
+                document.getElementById('parsing-text').innerText = '正在解压项目包...';
+                try {
+                    const zip = await JSZip.loadAsync(file);
+                    let osmText = null;
+                    importedModelsMap.clear();
+
+                    // 获取 OSM 文件
+                    const osmFile = Object.values(zip.files).find(f => !f.dir && (f.name.endsWith('.osm') || f.name.endsWith('.xml')));
+                    if (osmFile) {
+                        osmText = await osmFile.async("string");
+                    }
+                    
+                    // 缓存 models 文件夹下的所有 GLB 缓冲文件
+                    for (const [filename, zipEntry] of Object.entries(zip.files)) {
+                        if (!zipEntry.dir && filename.startsWith('models/') && (filename.endsWith('.glb') || filename.endsWith('.gltf'))) {
+                            const buffer = await zipEntry.async("arraybuffer");
+                            importedModelsMap.set(filename, buffer);
+                        }
+                    }
+
+                    if (osmText) {
+                        document.getElementById('parsing-text').innerText = '正在解析 XML 并还原模型...';
+                        setTimeout(() => { parseOSMXML_Preview(osmText); }, 50);
+                    } else {
+                        throw new Error("压缩包内未找到 .osm 或 .xml 地图数据文件！");
+                    }
+                } catch (e) {
+                    document.getElementById('upload-error').innerText = "ZIP解析失败: " + e.message;
+                    document.getElementById('upload-error').classList.remove('hidden');
+                    document.getElementById('parsing-indicator').classList.replace('flex', 'hidden');
+                }
+            } else {
+                importedModelsMap.clear(); // 清理旧模型缓存
+                document.getElementById('parsing-text').innerText = '正在读取文件...';
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    document.getElementById('parsing-text').innerText = '正在解析 XML...';
+                    setTimeout(() => { parseOSMXML_Preview(e.target.result); }, 50);
+                };
+                reader.readAsText(file);
+            }
+        }
+
+        function parseOSMXML_Preview(xmlString) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+            
+            const nodeElements = xmlDoc.getElementsByTagName('node');
+            const wayElements = xmlDoc.getElementsByTagName('way');
+            if (nodeElements.length === 0 || wayElements.length === 0) {
+                document.getElementById('upload-error').innerText = "解析失败：文件中未找到有效的 OSM 数据。";
+                document.getElementById('upload-error').classList.remove('hidden');
+                document.getElementById('parsing-indicator').classList.replace('flex', 'hidden');
+                return;
+            }
+
+            parsedNodes.clear();
+            rawMinLon = Infinity; rawMaxLon = -Infinity; rawMinLat = Infinity; rawMaxLat = -Infinity;
+
+            for (let i = 0; i < nodeElements.length; i++) {
+                const el = nodeElements[i];
+                const lon = parseFloat(el.getAttribute('lon'));
+                const lat = parseFloat(el.getAttribute('lat'));
+                if (lon < rawMinLon) rawMinLon = lon; if (lon > rawMaxLon) rawMaxLon = lon;
+                if (lat < rawMinLat) rawMinLat = lat; if (lat > rawMaxLat) rawMaxLat = lat;
+                parsedNodes.set(el.getAttribute('id'), { lon, lat });
+            }
+            parsedWays = Array.from(wayElements);
+
+            const cvs = document.getElementById('osm-preview-canvas');
+            const ctx = cvs.getContext('2d');
+            ctx.clearRect(0, 0, 800, 500);
+            ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 0.5; ctx.beginPath();
+
+            let drawnCount = 0;
+            for (let i = 0; i < parsedWays.length; i++) {
+                if (drawnCount > 6000) break;
+                const nds = parsedWays[i].getElementsByTagName('nd');
+                if (nds.length < 2) continue;
+
+                let first = true;
+                for (let j = 0; j < nds.length; j++) {
+                    const node = parsedNodes.get(nds[j].getAttribute('ref'));
+                    if (!node) continue;
+                    const px = ((node.lon - rawMinLon) / (rawMaxLon - rawMinLon)) * 800;
+                    const py = 500 - ((node.lat - rawMinLat) / (rawMaxLat - rawMinLat)) * 500;
+                    if (first) { ctx.moveTo(px, py); first = false; } else { ctx.lineTo(px, py); }
+                }
+                drawnCount++;
+            }
+            ctx.stroke();
+
+            document.getElementById('upload-screen').style.display = 'none';
+            document.getElementById('preview-modal').classList.replace('hidden', 'flex');
+        }
+
+        async function start3DGeneration() {
+            clearEntireScene();
+            
+            const ptMin = project(rawMinLon, rawMinLat);
+            const ptMax = project(rawMaxLon, rawMaxLat);
+            CITY_WIDTH_METERS = Math.abs(ptMax.x - ptMin.x) * 1.2;
+            CITY_DEPTH_METERS = Math.abs(ptMax.y - ptMin.y) * 1.2;
+
+            buildPedestal();
+            camera.position.set(0, 3000, 4000);
+            controls.target.set(0, 0, 0); controls.update();
+
+            let buildingCount = 0, roadCount = 0;
+            let lastYieldTime = performance.now();
+            
+            const highwayLevels = {
+                'motorway': 1, 'motorway_link': 1, 'trunk': 1, 'trunk_link': 1,
+                'primary': 2, 'primary_link': 2,
+                'secondary': 3, 'secondary_link': 3,
+                'tertiary': 4, 'tertiary_link': 4,
+                'unclassified': 5, 'residential': 5
+            };
+
+            for (let i = 0; i < parsedWays.length; i++) {
+                if (performance.now() - lastYieldTime > 20) {
+                    document.getElementById('parsing-text').innerText = `构建沙盘: ${Math.round(i/parsedWays.length*100)}%`;
+                    await new Promise(r => setTimeout(r, 0));
+                    lastYieldTime = performance.now();
+                }
+
+                const way = parsedWays[i];
+                const nds = way.getElementsByTagName('nd');
+                if (nds.length < 2) continue;
+
+                const points = [];
+                let valid = true, centerLon = 0, centerLat = 0;
+
+                const isClosed = nds.length > 2 && (nds[0].getAttribute('ref') === nds[nds.length - 1].getAttribute('ref'));
+
+                for (let j = 0; j < nds.length; j++) {
+                    const node = parsedNodes.get(nds[j].getAttribute('ref'));
+                    if (!node) { valid = false; break; }
+                    centerLon += node.lon; centerLat += node.lat;
+                    points.push(project(node.lon, node.lat));
+                }
+                if (!valid) continue;
+                
+                centerLon /= nds.length; centerLat /= nds.length;
+
+                if (selectedBounds) {
+                    if (centerLon < selectedBounds.minLon || centerLon > selectedBounds.maxLon ||
+                        centerLat < selectedBounds.minLat || centerLat > selectedBounds.maxLat) {
+                        continue;
+                    }
+                }
+
+                let isBuilding = false, isRoad = false, isPark = false, isWater = false;
+                let buildingLevels = 0, rawHeight = 0;
+                let highwayType = null;
+                
+                // ZIP 还原：检测自定义模型的附加标签
+                let modelPath = null;
+                let modelScale = 1.0;
+                let modelOffsetY = 0;
+
+                const wayId = way.getAttribute('id');
+                const tags = way.getElementsByTagName('tag');
+                
+                for (let j = 0; j < tags.length; j++) {
+                    const k = tags[j].getAttribute('k'), v = tags[j].getAttribute('v');
+                    if (k === 'building') isBuilding = true;
+                    if (k === 'highway') { isRoad = true; highwayType = v; }
+                    if (k === 'building:levels') buildingLevels = parseFloat(v);
+                    if (k === 'height') rawHeight = parseFloat(v);
+                    
+                    if (k === '3d_model') modelPath = v;
+                    if (k === 'model_scale') modelScale = parseFloat(v);
+                    if (k === 'model_offset_y') modelOffsetY = parseFloat(v);
+                    
+                    if ((k === 'leisure' && ['park', 'garden', 'pitch', 'golf_course'].includes(v)) || 
+                        (k === 'landuse' && ['grass', 'forest', 'greenfield', 'meadow', 'recreation_ground'].includes(v)) ||
+                        (k === 'natural' && ['wood', 'scrub', 'heath', 'grassland'].includes(v))) {
+                        isPark = true;
+                    }
+                    
+                    if ((k === 'natural' && ['water', 'bay', 'strait', 'waterway'].includes(v)) || 
+                        (k === 'waterway' && ['riverbank', 'dock', 'canal', 'basin'].includes(v)) || 
+                        (k === 'landuse' && ['basin', 'reservoir'].includes(v)) || 
+                        k === 'water') {
+                        isWater = true;
+                    }
+                }
+
+                if (isRoad) {
+                    const roadLevel = highwayLevels[highwayType] || 6;
+                    let roadWidth = 2.5; 
+                    if (roadLevel === 1) roadWidth = 7;
+                    else if (roadLevel === 2) roadWidth = 5;
+                    else if (roadLevel === 3) roadWidth = 3.5;
+                    else if (roadLevel >= 5) roadWidth = 1.8;
+
+                    const vec3s = points.map(p => new THREE.Vector3(p.x, 0, -p.y));
+                    const roadMesh = createRoadMesh(vec3s, roadWidth); 
+                    
+                    roadMesh.userData = { 
+                        id: wayId, center: new THREE.Vector3(points[0].x, 0, -points[0].y),
+                        roadLevel: roadLevel, highwayType: highwayType, osmPoints: points 
+                    };
+                    if (roadLevel > currentRoadMaxLevel) roadMesh.visible = false;
+                    roadsGroup.add(roadMesh); roadCount++;
+                }
+
+                if ((isBuilding || ((isPark || isWater) && isClosed)) && points.length >= 3) {
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    points.forEach(p => {
+                        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+                        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+                    });
+                    const pivotX = (minX + maxX) / 2, pivotY = (minY + maxY) / 2;
+                    const centerPos = new THREE.Vector3(pivotX, 0, -pivotY);
+
+                    const shape = new THREE.Shape();
+                    shape.moveTo(points[0].x - pivotX, points[0].y - pivotY);
+                    for (let j = 1; j < points.length; j++) { shape.lineTo(points[j].x - pivotX, points[j].y - pivotY); }
+
+                    if (isBuilding) {
+                        let height = rawHeight > 0 ? rawHeight : (buildingLevels > 0 ? buildingLevels * 3.5 : (Math.random() > 0.85 ? (Math.random() * 40 + 15) : (Math.random() * 10 + 5)));
+                        const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+                        geometry.rotateX(-Math.PI / 2);
+                        geometry.computeBoundingSphere(); 
+
+                        const mesh = new THREE.Mesh(geometry, currentMat.building);
+                        mesh.castShadow = true; mesh.receiveShadow = true;
+                        mesh.position.set(centerPos.x, getElevationAt(centerPos.x, centerPos.z), centerPos.z);
+                        
+                        mesh.userData = { 
+                            id: wayId, isBuilding: true, originalShape: shape, 
+                            height: Math.round(height * 10) / 10, rotation: 0, 
+                            center: centerPos, offsetX: 0, offsetZ: 0, hasCustomModel: false 
+                        };
+
+                        // 核心：处理 ZIP 解包后识别到的关联模型
+                        if (modelPath && importedModelsMap.has(modelPath)) {
+                            try {
+                                const buffer = importedModelsMap.get(modelPath);
+                                // slice(0) 保护原始 buffer 不被破坏
+                                const gltf = await gltfLoader.parseAsync(buffer.slice(0), ''); 
+                                const rawModel = gltf.scene;
+
+                                const rawBox = new THREE.Box3().setFromObject(rawModel);
+                                const rawCenter = new THREE.Vector3(); rawBox.getCenter(rawCenter);
+                                rawModel.position.set(-rawCenter.x, -rawBox.min.y, -rawCenter.z);
+                                const baseModelGroup = new THREE.Group(); baseModelGroup.add(rawModel);
+                                
+                                baseModelGroup.traverse((child) => { 
+                                    if (child.isMesh) { 
+                                        child.castShadow = true; child.receiveShadow = true; 
+                                        child.material = currentMat.building; 
+                                    } 
+                                });
+
+                                const cleanBox = new THREE.Box3().setFromObject(baseModelGroup);
+                                const cleanSize = new THREE.Vector3(); cleanBox.getSize(cleanSize);
+                                let maxClean = Math.max(cleanSize.x, cleanSize.z);
+                                if (maxClean < 0.001) maxClean = 1;
+
+                                const model = baseModelGroup.clone(); model.position.set(0, 0, 0); 
+                                mesh.geometry.computeBoundingBox();
+                                const bSize = new THREE.Vector3(); mesh.geometry.boundingBox.getSize(bSize);
+                                
+                                const baseScaleFactor = Math.max(bSize.x, bSize.z) / maxClean;
+                                const finalScale = baseScaleFactor * modelScale;
+                                model.scale.set(finalScale, finalScale, finalScale);
+                                model.position.y = modelOffsetY;
+
+                                mesh.add(model); 
+                                mesh.material = new THREE.MeshBasicMaterial({ visible: false }); 
+                                
+                                mesh.userData.hasCustomModel = true;
+                                mesh.userData.customModelRef = model; 
+                                mesh.userData.baseScaleFactor = baseScaleFactor;
+                                mesh.userData.modelScale = modelScale; 
+                                mesh.userData.modelLocalCenterY = 0; 
+                                mesh.userData.modelOffset = modelOffsetY;
+                                mesh.userData.customModelBuffer = buffer;
+                                mesh.userData.customModelFileName = modelPath.split('/').pop();
+                            } catch(e) {
+                                console.error("加载关联的模型文件失败", e);
+                            }
+                        }
+
+                        buildingsGroup.add(mesh);
+                        buildingCount++;
+                    } else if (isPark || isWater) {
+                        const planeGeom = new THREE.ShapeGeometry(shape);
+                        planeGeom.rotateX(-Math.PI / 2);
+                        const mesh = new THREE.Mesh(planeGeom, isPark ? currentMat.park : currentMat.water);
+                        
+                        const yElev = getElevationAt(centerPos.x, centerPos.z);
+                        const yOffset = isPark ? 0.1 : -0.5;
+                        mesh.position.set(centerPos.x, yElev + yOffset, centerPos.z);
+                        mesh.receiveShadow = false; 
+                        
+                        mesh.userData = { type: isPark ? 'park' : 'water', center: centerPos };
+                        landuseGroup.add(mesh);
+                    }
+                }
+            }
+            
+            document.getElementById('stat-buildings').innerText = buildingCount;
+            document.getElementById('stat-roads').innerText = roadCount;
+            document.getElementById('upload-screen').style.opacity = '0';
+            setTimeout(() => document.getElementById('upload-screen').style.display = 'none', 500);
+            
+            parsedWays = []; parsedNodes.clear();
+        }
+
+        function toggleAddMode() {
+            isAddMode = !isAddMode;
+            isCinematic = false;
+            const btn = document.getElementById('add-building-btn');
+            
+            if (isAddMode) {
+                btn.classList.add('bg-[#007aff]', 'text-white');
+                btn.classList.remove('bg-slate-800', 'hover:bg-slate-700', 'dark:bg-slate-100', 'dark:hover:bg-white', 'dark:text-slate-900');
+                document.getElementById('add-building-text').innerText = '单击放置 / Esc 退出';
+                document.body.style.cursor = 'crosshair';
+                closeEditor();
+                
+                const shape = new THREE.Shape();
+                const s = 15; 
+                shape.moveTo(-s, -s); shape.lineTo(s, -s); shape.lineTo(s, s); shape.lineTo(-s, s); shape.lineTo(-s, -s);
+                const geom = new THREE.ExtrudeGeometry(shape, { depth: 30, bevelEnabled: false });
+                geom.rotateX(-Math.PI / 2);
+                
+                const ghostMat = new THREE.MeshBasicMaterial({ color: 0x007aff, transparent: true, opacity: 0.5 });
+                ghostBuilding = new THREE.Mesh(geom, ghostMat);
+                scene.add(ghostBuilding);
+            } else {
+                btn.classList.remove('bg-[#007aff]', 'text-white');
+                btn.classList.add('bg-slate-800', 'hover:bg-slate-700', 'dark:bg-slate-100', 'dark:hover:bg-white', 'dark:text-slate-900');
+                document.getElementById('add-building-text').innerText = '添加自定义建筑';
+                document.body.style.cursor = 'default';
+                if (ghostBuilding) { scene.remove(ghostBuilding); ghostBuilding.geometry.dispose(); ghostBuilding = null; }
+            }
+        }
+        
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isAddMode) toggleAddMode(); });
+
+        function clearSelection() {
+            selectedBuildings.forEach(b => { 
+                if(!b.userData.hasCustomModel) {
+                    b.material = currentMat.building; 
+                } else {
+                    b.userData.customModelRef.traverse(child => {
+                        if (child.isMesh) child.material = currentMat.building;
+                    });
+                }
+            });
+            selectedBuildings.clear();
+        }
+
+        function updateEditorUI() {
+            const panel = document.getElementById('editor-panel');
+            if (selectedBuildings.size === 0) {
+                panel.style.transform = 'translateX(120%)';
+                return;
+            }
+            
+            panel.style.transform = 'translateX(0)';
+            const idDisplay = document.getElementById('building-id-display');
+            const countDisplay = document.getElementById('selection-count-display');
+            const heightInput = document.getElementById('building-height-input');
+            const rotInput = document.getElementById('building-rotation-input');
+            const offsetXInput = document.getElementById('building-offset-x');
+            const offsetZInput = document.getElementById('building-offset-z');
+            const modelControls = document.getElementById('custom-model-controls');
+            
+            if (selectedBuildings.size === 1) {
+                const singleObj = Array.from(selectedBuildings)[0];
+                idDisplay.innerText = "ID: " + (singleObj.userData.id || "Custom");
+                countDisplay.classList.add('hidden');
+                
+                offsetXInput.value = singleObj.userData.offsetX || 0;
+                offsetZInput.value = singleObj.userData.offsetZ || 0;
+                heightInput.value = singleObj.userData.height;
+                rotInput.value = singleObj.userData.rotation || 0;
+
+                if (singleObj.userData.hasCustomModel) {
+                    modelControls.classList.remove('hidden');
+                    document.getElementById('model-scale-input').value = singleObj.userData.modelScale || 1.0;
+                    document.getElementById('model-offset-input').value = singleObj.userData.modelOffset || 0;
+                } else {
+                    modelControls.classList.add('hidden');
+                }
+            } else {
+                idDisplay.innerText = "批量编辑";
+                countDisplay.classList.remove('hidden');
+                countDisplay.innerText = `选中: ${selectedBuildings.size}`;
+                offsetXInput.value = ""; offsetZInput.value = "";
+                heightInput.value = ""; rotInput.value = ""; 
+                modelControls.classList.add('hidden');
+            }
+        }
+
+        function onMouseClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+
+            if (isAddMode) {
+                const targetPt = new THREE.Vector3();
+                raycaster.ray.intersectPlane(mathPlane, targetPt);
+                if (targetPt) {
+                    const shape = new THREE.Shape();
+                    const s = 15; 
+                    shape.moveTo(-s, -s); shape.lineTo(s, -s); shape.lineTo(s, s); shape.lineTo(-s, s); shape.lineTo(-s, -s);
+
+                    const geom = new THREE.ExtrudeGeometry(shape, { depth: 30, bevelEnabled: false });
+                    geom.rotateX(-Math.PI / 2);
+                    geom.computeBoundingSphere();
+
+                    const mesh = new THREE.Mesh(geom, currentMat.highlight);
+                    mesh.castShadow = true; mesh.receiveShadow = true;
+                    const yElev = getElevationAt(targetPt.x, targetPt.z);
+                    mesh.position.set(targetPt.x, yElev, targetPt.z);
+                    mesh.userData = { id: 'manual_' + Date.now(), isBuilding: true, originalShape: shape, height: 30, rotation: 0, center: targetPt.clone(), offsetX: 0, offsetZ: 0, isCustom: true, hasCustomModel: false };
+                    
+                    buildingsGroup.add(mesh);
+                    document.getElementById('stat-buildings').innerText = buildingsGroup.children.length;
+                    
+                    toggleAddMode(); clearSelection(); selectedBuildings.add(mesh);
+                    updateEditorUI();
+                }
+                return;
+            }
+
+            const validTargets = buildingsGroup.children.filter(c => c.visible);
+            const intersects = raycaster.intersectObjects(validTargets, true); 
+            
+            if (intersects.length > 0) {
+                let obj = intersects[0].object;
+                while (obj.parent && obj.parent !== buildingsGroup) obj = obj.parent;
+
+                if (obj.userData.isBuilding) {
+                    const isMultiSelect = event.ctrlKey || event.metaKey || event.shiftKey;
+                    
+                    if (isMultiSelect) {
+                        isCinematic = false; 
+                        if (selectedBuildings.has(obj)) {
+                            selectedBuildings.delete(obj); 
+                            if(!obj.userData.hasCustomModel) obj.material = currentMat.building;
+                            else obj.userData.customModelRef.traverse(c => { if(c.isMesh) c.material = currentMat.building; });
+                        } else {
+                            selectedBuildings.add(obj); 
+                            if(!obj.userData.hasCustomModel) obj.material = currentMat.highlight;
+                            else obj.userData.customModelRef.traverse(c => { if(c.isMesh) c.material = currentMat.highlight; });
+                        }
+                    } else {
+                        clearSelection(); selectedBuildings.add(obj);
+                        if(!obj.userData.hasCustomModel) obj.material = currentMat.highlight;
+                        else obj.userData.customModelRef.traverse(c => { if(c.isMesh) c.material = currentMat.highlight; });
+
+                        const center = obj.position.clone();
+                        focusTarget = center.clone();
+                        
+                        if (is2DMode) {
+                            cameraTargetPos = new THREE.Vector3(focusTarget.x, camera.position.y, focusTarget.z);
+                            isFocusing = true;
+                        } else {
+                            isCinematic = true;
+                            isFocusing = false;
+                            cinematicRadius = Math.min(camera.position.distanceTo(focusTarget), 1500); 
+                            cinematicAngle = Math.atan2(camera.position.x - focusTarget.x, camera.position.z - focusTarget.z);
+                        }
+                    }
+                    updateEditorUI();
+                }
+            } else {
+                clearSelection(); updateEditorUI(); 
+                isFocusing = false; isCinematic = false;
+            }
+        }
+
+        function closeEditor() { clearSelection(); updateEditorUI(); isFocusing = false; isCinematic = false; }
+
+        function deleteSelectedBuildings() {
+            if (selectedBuildings.size === 0) return;
+            selectedBuildings.forEach(building => {
+                buildingsGroup.remove(building); building.geometry.dispose();
+                if (building.userData.customModelRef) building.remove(building.userData.customModelRef);
+            });
+            clearSelection(); updateEditorUI(); isCinematic = false;
+            document.getElementById('stat-buildings').innerText = buildingsGroup.children.length;
+        }
+
+        function updateBuildingPosition() {
+            if (selectedBuildings.size === 0) return;
+            const ox = parseFloat(document.getElementById('building-offset-x').value) || 0;
+            const oz = parseFloat(document.getElementById('building-offset-z').value) || 0;
+            
+            selectedBuildings.forEach(building => {
+                building.userData.offsetX = ox;
+                building.userData.offsetZ = oz;
+                const newX = building.userData.center.x + ox;
+                const newZ = building.userData.center.z + oz;
+                const newY = getElevationAt(newX, newZ);
+                building.position.set(newX, newY, newZ);
+                
+                if (selectedBuildings.size === 1) { focusTarget = building.position.clone(); }
+            });
+        }
+
+        function updateBuildingHeight() {
+            if (selectedBuildings.size === 0) return;
+            const val = document.getElementById('building-height-input').value;
+            if(!val) return;
+            const newHeight = parseFloat(val);
+            if (isNaN(newHeight) || newHeight <= 0) return;
+
+            selectedBuildings.forEach(building => {
+                if(building.userData.hasCustomModel) return;
+                building.geometry.dispose();
+                const newGeometry = new THREE.ExtrudeGeometry(building.userData.originalShape, { depth: newHeight, bevelEnabled: false });
+                newGeometry.rotateX(-Math.PI / 2);
+                newGeometry.computeBoundingSphere();
+                building.geometry = newGeometry;
+                building.userData.height = newHeight;
+            });
+        }
+
+        function updateBuildingRotation() {
+            if (selectedBuildings.size === 0) return;
+            const val = document.getElementById('building-rotation-input').value;
+            if(!val) return;
+            const newRot = parseFloat(val);
+            if (isNaN(newRot)) return;
+            
+            const rad = THREE.MathUtils.degToRad(newRot);
+            selectedBuildings.forEach(building => {
+                building.rotation.y = rad;
+                building.userData.rotation = newRot;
+            });
+        }
+
+        function handleModelUpload(event) {
+            if (selectedBuildings.size === 0) return;
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const modelBuffer = e.target.result.slice(0); 
+
+                    const gltf = await gltfLoader.parseAsync(e.target.result, '');
+                    const rawModel = gltf.scene;
+
+                    const rawBox = new THREE.Box3().setFromObject(rawModel);
+                    const rawCenter = new THREE.Vector3(); rawBox.getCenter(rawCenter);
+                    if (!isFinite(rawBox.max.x) || !isFinite(rawBox.min.x)) {
+                        alert("模型存在异常缩放，请清理后导出。"); return;
+                    }
+                    rawModel.position.set(-rawCenter.x, -rawBox.min.y, -rawCenter.z);
+                    const baseModelGroup = new THREE.Group(); baseModelGroup.add(rawModel);
+                    
+                    baseModelGroup.traverse((child) => { 
+                        if (child.isMesh) { 
+                            child.castShadow = true; 
+                            child.receiveShadow = true; 
+                            child.material = currentMat.highlight; 
+                        } 
+                    });
+
+                    const cleanBox = new THREE.Box3().setFromObject(baseModelGroup);
+                    const cleanSize = new THREE.Vector3(); cleanBox.getSize(cleanSize);
+                    let maxClean = Math.max(cleanSize.x, cleanSize.z);
+                    if (maxClean < 0.001) maxClean = 1;
+
+                    selectedBuildings.forEach(building => {
+                        if (building.userData.customModelRef) building.remove(building.userData.customModelRef);
+
+                        const model = baseModelGroup.clone(); model.position.set(0, 0, 0); 
+                        building.geometry.computeBoundingBox();
+                        const bSize = new THREE.Vector3(); building.geometry.boundingBox.getSize(bSize);
+                        
+                        const scaleFactor = Math.max(bSize.x, bSize.z) / maxClean;
+                        model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+
+                        building.add(model); 
+                        building.material = new THREE.MeshBasicMaterial({ visible: false }); 
+                        
+                        building.userData.hasCustomModel = true;
+                        building.userData.customModelRef = model; 
+                        building.userData.baseScaleFactor = scaleFactor;
+                        building.userData.modelScale = 1.0; 
+                        building.userData.modelLocalCenterY = 0; 
+                        building.userData.modelOffset = 0;
+                        
+                        building.userData.customModelBuffer = modelBuffer;
+                        building.userData.customModelFileName = file.name;
+                    });
+                    updateEditorUI(); event.target.value = '';
+                } catch (err) { alert('模型解析失败。'); }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function updateCustomModelTransforms() {
+            if (selectedBuildings.size !== 1) return;
+            const building = Array.from(selectedBuildings)[0];
+            if (!building.userData.hasCustomModel) return;
+
+            const scaleRatio = parseFloat(document.getElementById('model-scale-input').value) || 1;
+            const yOffset = parseFloat(document.getElementById('model-offset-input').value) || 0;
+
+            const model = building.userData.customModelRef;
+            model.scale.setScalar(building.userData.baseScaleFactor * scaleRatio);
+            model.position.y = building.userData.modelLocalCenterY + yOffset;
+
+            building.userData.modelScale = scaleRatio; building.userData.modelOffset = yOffset;
+        }
+
+        async function exportToZip() {
+            if (typeof JSZip === 'undefined') {
+                alert("打包组件加载中，请稍后再试...");
+                return;
+            }
+
+            const exportBtn = document.getElementById('export-osm-btn');
+            const originalText = exportBtn.innerHTML;
+            exportBtn.innerHTML = `<div class="spinner border-[#007aff] w-4 h-4 mr-2"></div> 正在打包处理...`;
+            exportBtn.disabled = true;
+
+            try {
+                const zip = new JSZip();
+                const modelFolder = zip.folder("models"); 
+
+                let osmStr = `<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6" generator="AppleStyleSandboxEditor">\n`;
+                let nodeId = -1;
+                let wayId = -1;
+
+                buildingsGroup.children.forEach(b => {
+                    const shapePts = b.userData.originalShape ? b.userData.originalShape.getPoints() : [];
+                    if (shapePts.length === 0) return;
+
+                    const ndRefs = [];
+                    const cosR = Math.cos(b.rotation.y);
+                    const sinR = Math.sin(b.rotation.y);
+
+                    shapePts.forEach(p => {
+                        let lx = p.x; let lz = -p.y;
+                        let gx = lx * cosR + lz * sinR;
+                        let gz = -lx * sinR + lz * cosR;
+                        let wx = b.position.x + gx;
+                        let wz = b.position.z + gz;
+                        const unproj = unproject(wx, -wz); 
+                        osmStr += `  <node id="${nodeId}" lat="${unproj.lat.toFixed(7)}" lon="${unproj.lon.toFixed(7)}" />\n`;
+                        ndRefs.push(nodeId);
+                        nodeId--;
+                    });
+                    
+                    ndRefs.push(ndRefs[0]);
+                    osmStr += `  <way id="${wayId}">\n`;
+                    ndRefs.forEach(ref => { osmStr += `    <nd ref="${ref}"/>\n`; });
+                    
+                    osmStr += `    <tag k="building" v="yes"/>\n`;
+                    osmStr += `    <tag k="height" v="${b.userData.height}"/>\n`;
+                    
+                    if (b.userData.hasCustomModel && b.userData.customModelBuffer) {
+                        const originalExt = b.userData.customModelFileName.split('.').pop() || 'glb';
+                        const exportModelName = `building_${Math.abs(wayId)}.${originalExt}`;
+                        
+                        modelFolder.file(exportModelName, b.userData.customModelBuffer);
+                        
+                        osmStr += `    <tag k="3d_model" v="models/${exportModelName}"/>\n`;
+                        osmStr += `    <tag k="model_scale" v="${b.userData.modelScale}"/>\n`;
+                        osmStr += `    <tag k="model_offset_y" v="${b.userData.modelOffset}"/>\n`;
+                    }
+
+                    if (b.userData.id && !b.userData.isCustom) {
+                        osmStr += `    <tag k="original_osm_id" v="${b.userData.id}"/>\n`;
+                    }
+                    osmStr += `  </way>\n`;
+                    wayId--;
+                });
+
+                roadsGroup.children.forEach(r => {
+                    if (r.userData.roadLevel > currentRoadMaxLevel) return;
+                    
+                    const pts = r.userData.osmPoints;
+                    if (!pts || pts.length < 2) return;
+
+                    const ndRefs = [];
+                    pts.forEach(p => {
+                        const unproj = unproject(p.x, p.y); 
+                        osmStr += `  <node id="${nodeId}" lat="${unproj.lat.toFixed(7)}" lon="${unproj.lon.toFixed(7)}" />\n`;
+                        ndRefs.push(nodeId);
+                        nodeId--;
+                    });
+
+                    osmStr += `  <way id="${wayId}">\n`;
+                    ndRefs.forEach(ref => { osmStr += `    <nd ref="${ref}"/>\n`; });
+                    osmStr += `    <tag k="highway" v="${r.userData.highwayType || 'unclassified'}"/>\n`;
+                    if (r.userData.id) {
+                        osmStr += `    <tag k="original_osm_id" v="${r.userData.id}"/>\n`;
+                    }
+                    osmStr += `  </way>\n`;
+                    wayId--;
+                });
+
+                osmStr += `</osm>`;
+                zip.file("city_sandbox_edited.osm", osmStr);
+                
+                const content = await zip.generateAsync({ type: "blob" });
+                const url = URL.createObjectURL(content);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "Apple_Style_Sandbox_Project.zip";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                console.error(err);
+                alert("打包导出失败，请检查控制台。");
+            } finally {
+                exportBtn.innerHTML = originalText;
+                exportBtn.disabled = false;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); 
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            frameCount++;
+            
+            if (frameCount % 20 === 0) {
+                const camPos = camera.position;
+                const renderDistSq = 15000 * 15000; 
+                const shadowDistSq = 6000 * 6000; 
+
+                buildingsGroup.children.forEach(b => {
+                    if (b.userData.center) {
+                        const basePos = new THREE.Vector3(b.userData.center.x + b.userData.offsetX, 0, b.userData.center.z + b.userData.offsetZ);
+                        const distSq = basePos.distanceToSquared(camPos);
+                        b.visible = distSq < renderDistSq;
+                        if (b.visible) {
+                            const isNear = distSq < shadowDistSq;
+                            if (b.castShadow !== isNear) { b.castShadow = isNear; b.receiveShadow = isNear; }
+                        }
+                    }
+                });
+                
+                roadsGroup.children.forEach(r => {
+                    if (r.userData.center) {
+                        const distVis = r.userData.center.distanceToSquared(camPos) < renderDistSq;
+                        r.visible = distVis && (r.userData.roadLevel <= currentRoadMaxLevel);
+                    }
+                });
+
+                landuseGroup.children.forEach(l => {
+                    if (l.userData.center) l.visible = l.userData.center.distanceToSquared(camPos) < renderDistSq;
+                });
+            }
+
+            if (isCinematic && focusTarget && !is2DMode) {
+                cinematicAngle += 0.0015; 
+                const targetX = focusTarget.x + cinematicRadius * Math.sin(cinematicAngle);
+                const targetZ = focusTarget.z + cinematicRadius * Math.cos(cinematicAngle);
+                const targetY = focusTarget.y + cinematicRadius * 0.8; 
+                camera.position.lerp(new THREE.Vector3(targetX, targetY, targetZ), 0.03);
+                controls.target.lerp(focusTarget, 0.05);
+            } 
+            else if (isFocusing && focusTarget && cameraTargetPos) {
+                controls.target.lerp(focusTarget, 0.15);
+                camera.position.lerp(cameraTargetPos, 0.15);
+                if (controls.target.distanceTo(focusTarget) < 0.5 && camera.position.distanceTo(cameraTargetPos) < 1.0) {
+                    isFocusing = false;
+                }
+            }
+            
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
